@@ -7,7 +7,7 @@ peer nodes, relays voice, and serves late joiners a snapshot.
 
 A node does nothing on its own. It registers with a cloud service
 ([arrr-cloud](https://github.com/m0dE/arrr-cloud), hosted at
-`https://nodes.arrr.fun`), which is what sends clients to it and connects it
+`https://cloud.arrr.fun`), which is what sends clients to it and connects it
 to other nodes. To provide a node to the public network you need an account
 there and a **node token** from its portal.
 
@@ -36,7 +36,7 @@ with a file watcher.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `ARRR_NODE_TOKEN` | *(unset)* | Token from the portal's **Nodes** page. Registers the node under your account. A service running `NODE_REGISTRATION=token` refuses nodes without one. |
-| `CENTRAL_SERVICE_URL` | `http://localhost:9001` | The cloud service to register with. `https://nodes.arrr.fun` for the public network. |
+| `CENTRAL_SERVICE_URL` | `http://localhost:9001` | The cloud service to register with. `https://cloud.arrr.fun` for the public network. |
 | `NODE_NAME` | `Node` | Label shown in the portal and dashboard. |
 | `NODE_PORT` | `8001` | Port to listen on. |
 | `NODE_PUBLIC_URL` | `ws://localhost:$NODE_PORT/ws` | Where browsers connect. Must be reachable from the internet. |
