@@ -174,7 +174,7 @@ export interface NetworkInput {
   data: any;              // Opaque payload (object for JSON, Buffer for binary)
   seq: number;            // Authority-assigned sequence (for bulk broadcast ordering)
   frame?: number;         // Broadcast frame - set by sendTick(), undefined until then
-  clientFrame?: number;   // Client's local frame when input was created (for sorting only)
+  clientFrame?: number;   // The frame the client simulated it in: the batcher holds it until that tick
 }
 
 /**

@@ -1,7 +1,7 @@
 import { NetworkInput, MessageType } from './types';
 import { roomManager } from './room-manager';
 import type { PeerManager } from './peer-manager';
-import { encodeTick } from './binary-protocol';
+import { encodeTick, encodeInputSlack, type SlackSample } from './binary-protocol';
 
 // Default tick rate (can be overridden per-room)
 const DEFAULT_TICK_RATE_HZ = 20;
@@ -14,7 +14,37 @@ interface RoomTickState {
   tickInterval: NodeJS.Timeout | null;
   peerManager: PeerManager | null;
   tickRateHz: number;
+  /** Inputs that asked for a frame not sent yet, by that frame, in arrival order. */
+  held: Map<number, NetworkInput[]>;
+  /** Per client: each input since the last report - the frame it asked for and how early it arrived, in ticks (negative = late). */
+  slack: Map<string, SlackSample[]>;
 }
+
+/**
+ * The target-frame input buffer.
+ *
+ * A client that predicts sends each input stamped with the frame it simulated
+ * it in. Without this buffer the node put every input in the next tick to go
+ * out, whatever the stamp said, so where an input landed depended on the
+ * moment it arrived relative to the node's timer: a client had to aim for
+ * the middle of a tick, and on a link whose uplink jitter exceeds half a tick
+ * no aim was good enough - measured at ±1-2 ticks of scatter and a third of
+ * inputs mispredicted over a satellite link. Held until its frame, an input
+ * that arrives early lands exactly where the client put it, and only one
+ * that arrives late (after the tick for its frame went out) still slips.
+ *
+ * The client cannot see how early it is arriving, only whether it was late;
+ * so the node tells it, once a second: the slack of every input since the
+ * last report. From that the client's adaptive buffer sets how far ahead to
+ * aim - as much as the link's jitter needs, no more - and ticks a little
+ * faster or slower to get there. That loop is the other half of this file,
+ * on the client.
+ *
+ * Bounded: a target further ahead than this many ticks is a broken or hostile
+ * client and is clamped, so nothing here can be made to hold forever.
+ */
+const MAX_HOLD_TICKS = 40;
+const SLACK_REPORT_EVERY = 20;
 
 const roomTickStates = new Map<string, RoomTickState>();
 
@@ -26,7 +56,9 @@ function getOrCreateTickState(roomId: string, tickRateHz?: number): RoomTickStat
       pendingPeerInputs: [],
       tickInterval: null,
       peerManager: null,
-      tickRateHz: tickRateHz || DEFAULT_TICK_RATE_HZ
+      tickRateHz: tickRateHz || DEFAULT_TICK_RATE_HZ,
+      held: new Map(),
+      slack: new Map()
     });
   }
   return roomTickStates.get(roomId)!;
@@ -57,6 +89,17 @@ function sendTick(roomId: string) {
 
   // Increment frame
   tickState.frame++;
+
+  // Whatever was held for this frame is sequenced now, ahead of anything
+  // that arrived without a target since the last tick.
+  const due = tickState.held.get(tickState.frame);
+  if (due) {
+    tickState.held.delete(tickState.frame);
+    const late = tickState.pendingInputs;
+    tickState.pendingInputs = [];
+    for (const input of due) sequence(roomId, input, tickState);
+    tickState.pendingInputs.push(...late);
+  }
 
   // Collect pending inputs
   const inputs = tickState.pendingInputs;
@@ -109,6 +152,15 @@ function sendTick(roomId: string) {
         console.error(`Failed to send tick to client ${client.id}:`, err);
       }
     });
+  }
+
+  if (tickState.frame % SLACK_REPORT_EVERY === 0 && tickState.slack.size) {
+    for (const client of clients) {
+      const samples = tickState.slack.get(client.id);
+      if (!samples || !client.initialStateReceived) continue;
+      try { client.socket.send(encodeInputSlack(tickState.frame, samples)); } catch { /* the tick failed too */ }
+    }
+    tickState.slack.clear();
   }
 
   // Drained every tick, whether or not there is anybody to send it to.
@@ -300,6 +352,49 @@ export function setCurrentFrame(roomId: string, frame: number): void {
   const tickState = getOrCreateTickState(roomId);
   tickState.frame = frame;
   (tickState as any).touchedAt = Date.now();
+}
+
+/**
+ * Sequence an input now: number it, keep it in the room's history, queue it
+ * for the peers and for the next tick.
+ */
+function sequence(roomId: string, input: NetworkInput, tickState: RoomTickState): void {
+  const seq = roomManager.addInput(roomId, input);
+  if (!seq) return;
+  input.seq = seq;
+  tickState.pendingPeerInputs.push(input);
+  tickState.pendingInputs.push(input);
+}
+
+/**
+ * Admit an input from a client (directly or relayed from a replica) on the
+ * authority: into the tick it asked for if that tick is still to come, into
+ * the next one otherwise. The one place an input enters the stream.
+ */
+export function admitInput(roomId: string, input: NetworkInput, peerManager: PeerManager): void {
+  const room = roomManager.getRoom(roomId);
+  if (!room?.isAuthority) return;
+  const tickState = getOrCreateTickState(roomId);
+  tickState.peerManager = peerManager;
+  const next = tickState.frame + 1;
+  const target = typeof input.clientFrame === 'number' ? input.clientFrame : next;
+  let slack = target - next;
+  if (slack > MAX_HOLD_TICKS) slack = MAX_HOLD_TICKS;
+  if (process.env.SLACK_TRACE && slack < 0) console.log(`[SLACK-LATE] room=${roomId} client=${input.clientId.slice(0, 8)} target=${target} next=${next} slack=${slack} type=${input.type}`);
+  if (input.clientId) {
+    let arr = tickState.slack.get(input.clientId);
+    if (!arr) tickState.slack.set(input.clientId, (arr = []));
+    if (arr.length < 255) arr.push({ target, slack });
+  }
+  if (slack > 0) {
+    const at = next + slack;
+    let arr = tickState.held.get(at);
+    if (!arr) tickState.held.set(at, (arr = []));
+    arr.push(input);
+  } else {
+    sequence(roomId, input, tickState);
+  }
+  if (!tickState.tickInterval) startRoomTick(roomId, peerManager);
 }
 
 // Queue input to be sent on next tick

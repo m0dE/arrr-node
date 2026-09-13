@@ -4,7 +4,7 @@ import { roomManager } from './room-manager';
 import { PeerManager } from './peer-manager';
 import { handlePeerConnection } from './peer-handler';
 import { syncMasterClientList } from './sync-utils';
-import { queueInputForClients, queueInputForPeers, getCurrentFrame, setCurrentFrame, startRoomTick, stopRoomTick } from './input-batcher';
+import { admitInput, queueInputForClients, queueInputForPeers, getCurrentFrame, setCurrentFrame, startRoomTick, stopRoomTick } from './input-batcher';
 import {
   encodeRoomCreated,
   encodeInitialState,
@@ -408,16 +408,11 @@ export function handleClientConnection(
           // Setting frame here causes race condition where INITIAL_STATE includes
           // inputs with wrong frame (client's frame instead of broadcast tick frame).
           // Store client's frame separately for server-side sorting.
-          clientFrame: clientFrame  // For sorting only, not the broadcast frame
+          clientFrame: clientFrame  // The frame the client simulated it in; the batcher holds it until then
         };
 
         if (room.isAuthority) {
-          const seq = roomManager.addInput(currentRoomId, input);
-          if (seq) {
-            input.seq = seq;
-            queueInputForPeers(currentRoomId, input, peerManager);
-            queueInputForClients(currentRoomId, input, peerManager);
-          }
+          admitInput(currentRoomId, input, peerManager);
         } else {
           peerManager.broadcastToPeers({
             type: MessageType.RELAY_INPUT,
@@ -1355,6 +1350,7 @@ export function handleClientConnection(
             type: data?.type || 'input',
             data: data, // Keep as-is, can be any JSON-serializable data
             seq: 0, // Will be set by authority node
+            clientFrame: typeof message.payload?.frame === 'number' ? message.payload.frame >>> 0 : undefined,
             // frame is deliberately NOT set here. sendTick() stamps the frame the
             // input is actually broadcast in, which is the NEXT tick - stamping the
             // current frame on arrival makes room.inputs claim a frame no client has
@@ -1375,16 +1371,7 @@ export function handleClientConnection(
           // Application layer can use this to identify the sender
 
           if (room.isAuthority) {
-            // This node is authority, process immediately
-            const seq = roomManager.addInput(roomId, input);
-
-            if (seq) {
-              input.seq = seq;
-
-              // Queue for batched broadcast to peers and clients
-              queueInputForPeers(roomId, input, peerManager);
-              queueInputForClients(roomId, input, peerManager);
-            }
+            admitInput(roomId, input, peerManager);
           } else {
             // Relay to authority node through peers
             const peers = peerManager.getPeers().filter(p => p.isConnected);
