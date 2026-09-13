@@ -90,15 +90,15 @@ function sendTick(roomId: string) {
   // Increment frame
   tickState.frame++;
 
-  // Whatever was held for this frame is sequenced now, ahead of anything
-  // that arrived without a target since the last tick.
+  // Whatever was held for this frame is sequenced now. After, not before,
+  // anything sequenced on arrival since the last tick: a tick is broadcast
+  // in the order it is listed and replayed by a late joiner in seq order,
+  // and those have to be the same order or the joiner builds a different
+  // world from the same inputs.
   const due = tickState.held.get(tickState.frame);
   if (due) {
     tickState.held.delete(tickState.frame);
-    const late = tickState.pendingInputs;
-    tickState.pendingInputs = [];
     for (const input of due) sequence(roomId, input, tickState);
-    tickState.pendingInputs.push(...late);
   }
 
   // Collect pending inputs
