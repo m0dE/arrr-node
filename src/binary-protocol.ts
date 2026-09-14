@@ -38,6 +38,11 @@ export const BinaryMessageType = {
   ROOM_LEFT: 0x07,
   SYNC_HASH: 0x08,
   CLIENT_LIST_UPDATE: 0x09,
+  // Node -> Client, once a second: for each of its inputs since the last
+  // report, the frame it asked for and how many ticks early it arrived
+  // (negative = late: it slipped into a later tick). See input-batcher.ts,
+  // admitInput.
+  INPUT_SLACK: 0x0C,         // [0x0C][frame:4][count:1]([target:4][slack:int8] x count)
   // Legacy partition-based snapshots (deprecated)
   PARTITION_REQUEST: 0x0A,   // Node -> Client: request partition N of M
   PARTITION_RESPONSE: 0x0B,  // Client -> Node: partition bytes + hash
@@ -73,6 +78,21 @@ export const BinaryMessageType = {
 
 /** Largest number of inputs a single TICK's 16-bit count field can describe. */
 export const MAX_TICK_INPUTS = 0xffff;
+
+export interface SlackSample { target: number; slack: number }
+
+export function encodeInputSlack(frame: number, samples: SlackSample[]): Buffer {
+  const n = Math.min(255, samples.length);
+  const message = Buffer.alloc(6 + 5 * n);
+  message[0] = BinaryMessageType.INPUT_SLACK;
+  message.writeUInt32LE(frame >>> 0, 1);
+  message[5] = n;
+  for (let i = 0; i < n; i++) {
+    message.writeUInt32LE(samples[i].target >>> 0, 6 + 5 * i);
+    message.writeInt8(Math.max(-128, Math.min(127, samples[i].slack | 0)), 10 + 5 * i);
+  }
+  return message;
+}
 
 /**
  * Largest single input the tick format can describe.

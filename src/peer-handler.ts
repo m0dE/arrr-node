@@ -3,7 +3,7 @@ import { roomManager } from './room-manager';
 import { voiceRelay } from './voice-relay';
 import type { PeerManager } from './peer-manager';
 import { noteHashRelayReceived } from './peer-manager';
-import { queueInputForClients, queueInputForPeers, setCurrentFrame } from './input-batcher';
+import { admitInput, queueInputForClients, queueInputForPeers, setCurrentFrame } from './input-batcher';
 import { syncMasterClientList } from './sync-utils';
 import { encodeTick, encodeSnapshotUpdate, encodeClientListUpdate } from './binary-protocol';
 import type WebSocket from 'ws';
@@ -182,20 +182,7 @@ export function handlePeerConnection(socket: WebSocket, peerManager: PeerManager
             if (relayInput.seq !== undefined && relayInput.seq > 0) {
               break;
             }
-            const seq = roomManager.addInput(roomId, relayInput);
-
-            if (seq) {
-              // Queue the very object that went into room.inputs, not a copy.
-              //
-              // sendTick stamps input.frame on whatever it broadcasts. Queuing a
-              // copy meant only the copy got a frame, and the history entry kept
-              // frame === undefined forever - which every late-joiner filter
-              // drops on sight. The effect was that a late joiner silently never
-              // replayed a single input that originated on a replica node.
-              relayInput.seq = seq;
-              queueInputForPeers(roomId, relayInput, peerManager);
-              queueInputForClients(roomId, relayInput, peerManager);
-            }
+            admitInput(roomId, relayInput, peerManager);
           }
           break;
         }
